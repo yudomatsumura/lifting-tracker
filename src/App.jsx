@@ -1,14 +1,30 @@
 import { useState, useEffect, useRef } from "react";
 
-const STORAGE_KEY = "lifting-records-v1";
-const SHARED_KEY = "lifting-leaderboard-v1";
+const SUPABASE_URL = "https://gjrtwnjobcfdpuhnvbgl.supabase.co";
+const SUPABASE_KEY = "sb_publishable_O8F2wts9p5lf40S03cXYKg_C6IxLx66";
 
-const BALL_EMOJI = "⚽";
+const LOCAL_KEY = "lifting-records-v1";
+const NAME_KEY = "lifting-name";
+
+async function dbFetch(path, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation",
+      ...options.headers,
+    },
+    ...options,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const text = await res.text();
+  return text ? JSON.parse(text) : [];
+}
 
 function AnimatedNumber({ value }) {
   const [display, setDisplay] = useState(value);
   const prev = useRef(value);
-
   useEffect(() => {
     if (prev.current === value) return;
     const start = prev.current;
@@ -24,55 +40,48 @@ function AnimatedNumber({ value }) {
     };
     requestAnimationFrame(tick);
   }, [value]);
-
   return <span>{display.toLocaleString()}</span>;
 }
 
 export default function App() {
   const [tab, setTab] = useState("record");
-  const [name, setName] = useState(() => localStorage.getItem("lifting-name") || "");
-  const [nameSet, setNameSet] = useState(() => !!localStorage.getItem("lifting-name"));
+  const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) || "");
+  const [nameSet, setNameSet] = useState(() => !!localStorage.getItem(NAME_KEY));
+  const [inputName, setInputName] = useState("");
   const [count, setCount] = useState("");
   const [records, setRecords] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "[]"); } catch { return []; }
   });
-  const [shared, setShared] = useState([]);
+  const [ranking, setRanking] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [newBest, setNewBest] = useState(false);
-  const [inputName, setInputName] = useState("");
-  const countRef = useRef(null);
 
   const today = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric" });
   const todayKey = new Date().toISOString().slice(0, 10);
   const best = records.length ? Math.max(...records.map(r => r.count)) : 0;
   const todayRecord = records.find(r => r.date === todayKey);
 
-  const loadShared = async () => {
+  const loadRanking = async () => {
     try {
-      const result = await window.storage.list("lb:", true);
-      if (!result) return;
-      const entries = await Promise.all(
-        result.keys.map(async (k) => {
-          try {
-            const d = await window.storage.get(k, true);
-            return d ? JSON.parse(d.value) : null;
-          } catch { return null; }
-        })
+      const data = await dbFetch(
+        `records?select=name,count,date&order=count.desc`
       );
-      setShared(
-        entries
-          .filter(Boolean)
-          .sort((a, b) => b.best - a.best)
-          .slice(0, 20)
-      );
-    } catch {}
+      // 各ユーザーの最高記録だけ残す
+      const map = {};
+      for (const r of data) {
+        if (!map[r.name] || r.count > map[r.name].count) map[r.name] = r;
+      }
+      setRanking(Object.values(map).sort((a, b) => b.count - a.count).slice(0, 20));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  useEffect(() => { loadShared(); }, []);
+  useEffect(() => { loadRanking(); }, []);
 
   const handleSetName = () => {
     if (!inputName.trim()) return;
-    localStorage.setItem("lifting-name", inputName.trim());
+    localStorage.setItem(NAME_KEY, inputName.trim());
     setName(inputName.trim());
     setNameSet(true);
   };
@@ -84,19 +93,22 @@ export default function App() {
     const rec = { date: todayKey, count: num, ts: Date.now() };
     const updated = [rec, ...records.filter(r => r.date !== todayKey)].sort((a, b) => b.ts - a.ts);
     setRecords(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    const newBestVal = num > best;
-    if (newBestVal) setNewBest(true);
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(updated));
+    if (num > best) setNewBest(true);
 
-    // Push to shared leaderboard
-    const myBest = Math.max(num, best);
     try {
-      await window.storage.set(`lb:${name}`, JSON.stringify({ name, best: myBest, date: todayKey }), true);
-    } catch {}
-    await loadShared();
+      await dbFetch("records", {
+        method: "POST",
+        body: JSON.stringify({ name, count: num, date: todayKey }),
+      });
+      await loadRanking();
+    } catch (e) {
+      console.error(e);
+    }
+
     setCount("");
     setSubmitting(false);
-    setTimeout(() => setNewBest(false), 2000);
+    setTimeout(() => setNewBest(false), 2500);
   };
 
   const streak = (() => {
@@ -110,7 +122,7 @@ export default function App() {
     return s;
   })();
 
-  const myRank = shared.findIndex(e => e.name === name) + 1;
+  const myRank = ranking.findIndex(e => e.name === name) + 1;
 
   if (!nameSet) {
     return (
@@ -145,7 +157,7 @@ export default function App() {
             <button
               key={t}
               style={{ ...styles.navBtn, ...(tab === t ? styles.navBtnActive : {}) }}
-              onClick={() => { setTab(t); if (t === "ranking") loadShared(); }}
+              onClick={() => { setTab(t); if (t === "ranking") loadRanking(); }}
             >
               {t === "record" ? "記録する" : t === "history" ? "履歴" : "ランキング"}
             </button>
@@ -157,7 +169,6 @@ export default function App() {
         {tab === "record" && (
           <div style={styles.section}>
             <p style={styles.dateLabel}>{today}</p>
-
             <div style={styles.statsRow}>
               <div style={styles.statCard}>
                 <span style={styles.statVal}><AnimatedNumber value={best} /></span>
@@ -187,7 +198,6 @@ export default function App() {
               <label style={styles.inputLabel}>今日の回数を入力</label>
               <div style={styles.inputRow}>
                 <input
-                  ref={countRef}
                   type="number"
                   min="1"
                   max="99999"
@@ -209,9 +219,7 @@ export default function App() {
             </div>
 
             {newBest && (
-              <div style={styles.burst}>
-                🎉 新記録達成！おめでとう！
-              </div>
+              <div style={styles.burst}>🎉 新記録達成！おめでとう！</div>
             )}
           </div>
         )}
@@ -249,24 +257,24 @@ export default function App() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>🏆 友達ランキング</h2>
             <p style={styles.rankSub}>記録を保存すると自動でランキングに反映されます</p>
-            {shared.length === 0 ? (
+            {ranking.length === 0 ? (
               <p style={styles.empty}>まだデータがありません。記録を保存してみよう！</p>
             ) : (
               <div style={styles.rankList}>
-                {shared.map((e, i) => {
+                {ranking.map((e, i) => {
                   const isMe = e.name === name;
                   const medals = ["🥇", "🥈", "🥉"];
                   return (
                     <div key={e.name} style={{ ...styles.rankItem, ...(isMe ? styles.rankItemMe : {}) }}>
                       <span style={styles.rankPos}>{medals[i] || `${i + 1}`}</span>
                       <span style={styles.rankName}>{e.name}{isMe ? " (あなた)" : ""}</span>
-                      <span style={styles.rankBest}>{e.best.toLocaleString()}回</span>
+                      <span style={styles.rankBest}>{e.count.toLocaleString()}回</span>
                     </div>
                   );
                 })}
               </div>
             )}
-            <button style={styles.refreshBtn} onClick={loadShared}>🔄 更新</button>
+            <button style={styles.refreshBtn} onClick={loadRanking}>🔄 更新</button>
           </div>
         )}
       </main>
@@ -297,7 +305,7 @@ const styles = {
   countInput: { width: 140, fontSize: 52, fontWeight: 900, color: "#fff", background: "transparent", border: "none", borderBottom: "3px solid #4d8cff", outline: "none", textAlign: "center", padding: "0 4px" },
   kai: { fontSize: 22, color: "#7090d0", fontWeight: 700 },
   submitBtn: { background: "linear-gradient(135deg, #2a6fff, #4d8cff)", border: "none", borderRadius: 12, color: "#fff", fontSize: 16, fontWeight: 800, padding: "14px 36px", cursor: "pointer", transition: "all .2s", letterSpacing: 1 },
-  burst: { background: "linear-gradient(135deg, #f5a623, #ff6b35)", borderRadius: 14, padding: "16px", textAlign: "center", fontSize: 18, fontWeight: 800, color: "#fff", animation: "none" },
+  burst: { background: "linear-gradient(135deg, #f5a623, #ff6b35)", borderRadius: 14, padding: "16px", textAlign: "center", fontSize: 18, fontWeight: 800, color: "#fff" },
   sectionTitle: { fontSize: 18, fontWeight: 800, color: "#fff", margin: 0 },
   empty: { color: "#7090d0", textAlign: "center", padding: "40px 0" },
   histList: { display: "flex", flexDirection: "column", gap: 8 },
@@ -316,8 +324,6 @@ const styles = {
   rankName: { flex: 1, fontWeight: 700, fontSize: 15, color: "#e0ecff" },
   rankBest: { fontWeight: 900, fontSize: 18, color: "#4d8cff" },
   refreshBtn: { background: "#0d1f4a", border: "1px solid #2a4aad", color: "#7090d0", borderRadius: 10, padding: "10px 20px", cursor: "pointer", fontSize: 14, fontWeight: 600, alignSelf: "center" },
-
-  // Setup screen
   setup: { minHeight: "100vh", background: "#0a0f1e", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
   setupCard: { background: "#0d1f4a", border: "2px solid #2a4aad", borderRadius: 24, padding: "40px 32px", maxWidth: 360, width: "100%", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 },
   bigBall: { fontSize: 64, lineHeight: 1 },
