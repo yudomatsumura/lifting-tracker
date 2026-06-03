@@ -61,6 +61,7 @@ export default function App() {
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) || "");
   const [nameSet, setNameSet] = useState(() => !!localStorage.getItem(NAME_KEY));
   const [inputName, setInputName] = useState("");
+  const [inputBest, setInputBest] = useState("");
   const [count, setCount] = useState("");
   const [records, setRecords] = useState(() => {
     try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "[]"); } catch { return []; }
@@ -137,10 +138,23 @@ export default function App() {
 
   useEffect(() => { loadRanking(); loadTodayAll(); }, []);
 
-  const handleSetName = () => {
+  const handleSetName = async () => {
     if (!inputName.trim()) return;
-    localStorage.setItem(NAME_KEY, inputName.trim());
-    setName(inputName.trim());
+    const n = inputName.trim();
+    localStorage.setItem(NAME_KEY, n);
+    setName(n);
+
+    // 最高記録が入力されていたら保存
+    const bestNum = parseInt(inputBest, 10);
+    if (bestNum > 0) {
+      const rec = { date: todayKey, count: bestNum, ts: Date.now() };
+      const updated = [rec];
+      setRecords(updated);
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(updated));
+      try {
+        await dbFetch("records", { method: "POST", body: JSON.stringify({ name: n, count: bestNum, date: todayKey }) });
+      } catch (e) { console.error(e); }
+    }
     setNameSet(true);
   };
 
@@ -183,16 +197,27 @@ export default function App() {
         <div style={s.setupCard}>
           <div style={{fontSize:64}}>⚽</div>
           <h1 style={s.setupTitle}>リフティング記録帳</h1>
-          <p style={s.setupSub}>まずはニックネームを設定してください</p>
+          <p style={s.setupSub}>ニックネームと今までの最高記録を入力してください</p>
           <input
             style={s.nameInput}
-            placeholder="例：ケンジ、田中、Taro..."
+            placeholder="ニックネーム（例：ケンジ）"
             value={inputName}
             onChange={e => setInputName(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleSetName()}
             maxLength={12}
           />
-          <button style={s.setupBtn} onClick={handleSetName}>はじめる →</button>
+          <div style={{width:"100%", position:"relative"}}>
+            <input
+              style={{...s.nameInput, paddingRight:40}}
+              placeholder="今までの最高記録（回）"
+              type="number"
+              min="1"
+              value={inputBest}
+              onChange={e => setInputBest(e.target.value)}
+            />
+            <span style={{position:"absolute", right:14, top:"50%", transform:"translateY(-50%)", color:"#7090d0", fontSize:13}}>回</span>
+          </div>
+          <p style={{margin:0, color:"#506090", fontSize:11}}>※最高記録は今日の記録として登録されます</p>
+          <button style={{...s.setupBtn, opacity: !inputName.trim() ? 0.5 : 1}} onClick={handleSetName} disabled={!inputName.trim()}>はじめる →</button>
         </div>
       </div>
     );
