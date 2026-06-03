@@ -144,15 +144,18 @@ export default function App() {
     localStorage.setItem(NAME_KEY, n);
     setName(n);
 
-    // 最高記録が入力されていたら保存
+    // 最高記録が入力されていたら昨日の日付で保存
     const bestNum = parseInt(inputBest, 10);
     if (bestNum > 0) {
-      const rec = { date: todayKey, count: bestNum, ts: Date.now() };
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayKey = getDateKey(yesterday);
+      const rec = { date: yesterdayKey, count: bestNum, ts: Date.now() };
       const updated = [rec];
       setRecords(updated);
       localStorage.setItem(LOCAL_KEY, JSON.stringify(updated));
       try {
-        await dbFetch("records", { method: "POST", body: JSON.stringify({ name: n, count: bestNum, date: todayKey }) });
+        await dbFetch("records", { method: "POST", body: JSON.stringify({ name: n, count: bestNum, date: yesterdayKey }) });
       } catch (e) { console.error(e); }
     }
     setNameSet(true);
