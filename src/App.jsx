@@ -21,7 +21,21 @@ async function dbFetch(path, options = {}) {
   return text ? JSON.parse(text) : [];
 }
 
-function AnimatedNumber({ value }) {
+// 日付ユーティリティ
+function getDateKey(d) { return d.toISOString().slice(0, 10); }
+function getWeekDates(offsetWeek = 0) {
+  const now = new Date();
+  const day = now.getDay(); // 0=日
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1) + offsetWeek * 7);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return getDateKey(d);
+  });
+}
+
+function AnimatedNumber({ value, suffix = "" }) {
   const [display, setDisplay] = useState(value);
   const prev = useRef(value);
   useEffect(() => {
@@ -39,7 +53,7 @@ function AnimatedNumber({ value }) {
     };
     requestAnimationFrame(tick);
   }, [value]);
-  return <span>{display.toLocaleString()}</span>;
+  return <span>{display.toLocaleString()}{suffix}</span>;
 }
 
 export default function App() {
@@ -52,30 +66,67 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || "[]"); } catch { return []; }
   });
   const [ranking, setRanking] = useState([]);
+  const [growthRanking, setGrowthRanking] = useState([]);
   const [todayAll, setTodayAll] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [newBest, setNewBest] = useState(false);
 
   const today = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric" });
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = getDateKey(new Date());
   const best = records.length ? Math.max(...records.map(r => r.count)) : 0;
   const todayRecord = records.find(r => r.date === todayKey);
+
+  const thisWeek = getWeekDates(0);
+  const lastWeek = getWeekDates(-1);
 
   const loadRanking = async () => {
     try {
       const data = await dbFetch(`records?select=name,count,date&order=count.desc`);
+      // 通常ランキング（自己ベスト）
       const map = {};
       for (const r of data) {
         if (!map[r.name] || r.count > map[r.name].count) map[r.name] = r;
       }
       setRanking(Object.values(map).sort((a, b) => b.count - a.count).slice(0, 20));
+
+      // 成長ランキング（先週平均 vs 今週平均）
+      const nameMap = {};
+      for (const r of data) {
+        if (!nameMap[r.name]) nameMap[r.name] = [];
+        nameMap[r.name].push(r);
+      }
+      const growth = [];
+      for (const [n, recs] of Object.entries(nameMap)) {
+        const thisRecs = recs.filter(r => thisWeek.includes(r.date));
+        const lastRecs = recs.filter(r => lastWeek.includes(r.date));
+        if (thisRecs.length === 0) continue; // 今週記録なし はスキップ
+        const thisAvg = thisRecs.reduce((a, b) => a + b.count, 0) / thisRecs.length;
+        const lastAvg = lastRecs.length > 0
+          ? lastRecs.reduce((a, b) => a + b.count, 0) / lastRecs.length
+          : null;
+        const rate = lastAvg !== null ? ((thisAvg - lastAvg) / lastAvg) * 100 : null;
+        growth.push({
+          name: n,
+          thisAvg: Math.round(thisAvg),
+          lastAvg: lastAvg !== null ? Math.round(lastAvg) : null,
+          rate: rate !== null ? Math.round(rate) : null,
+          thisDays: thisRecs.length,
+        });
+      }
+      // 伸び率でソート（先週記録なしは最後）
+      growth.sort((a, b) => {
+        if (a.rate === null && b.rate === null) return b.thisAvg - a.thisAvg;
+        if (a.rate === null) return 1;
+        if (b.rate === null) return -1;
+        return b.rate - a.rate;
+      });
+      setGrowthRanking(growth.slice(0, 20));
     } catch (e) { console.error(e); }
   };
 
   const loadTodayAll = async () => {
     try {
       const data = await dbFetch(`records?select=name,count,created_at&date=eq.${todayKey}&order=count.desc`);
-      // 同じ人が複数回記録してたら最高値だけ残す
       const map = {};
       for (const r of data) {
         if (!map[r.name] || r.count > map[r.name].count) map[r.name] = r;
@@ -116,7 +167,7 @@ export default function App() {
     let s = 0;
     const d = new Date();
     for (let i = 0; i < 60; i++) {
-      const k = d.toISOString().slice(0, 10);
+      const k = getDateKey(d);
       if (records.find(r => r.date === k)) { s++; d.setDate(d.getDate() - 1); }
       else break;
     }
@@ -124,6 +175,7 @@ export default function App() {
   })();
 
   const myRank = ranking.findIndex(e => e.name === name) + 1;
+  const myGrowthRank = growthRanking.findIndex(e => e.name === name) + 1;
 
   if (!nameSet) {
     return (
@@ -146,8 +198,8 @@ export default function App() {
     );
   }
 
-  const tabs = ["record", "today", "history", "ranking"];
-  const tabLabels = { record:"記録する", today:"今日", history:"履歴", ranking:"ランキング" };
+  const tabs = ["record", "today", "growth", "ranking"];
+  const tabLabels = { record:"記録する", today:"今日", growth:"成長", ranking:"ランキング" };
 
   return (
     <div style={s.root}>
@@ -163,7 +215,7 @@ export default function App() {
               style={{...s.navBtn, ...(tab===t?s.navBtnActive:{})}}
               onClick={() => {
                 setTab(t);
-                if (t === "ranking") loadRanking();
+                if (t === "ranking" || t === "growth") loadRanking();
                 if (t === "today") loadTodayAll();
               }}
             >
@@ -189,8 +241,8 @@ export default function App() {
                 <span style={s.statLabel}>連続日数</span>
               </div>
               <div style={{...s.statCard, background:"#f0fff4", borderColor:"#22c55e"}}>
-                <span style={{...s.statVal, color:"#22c55e"}}>{myRank>0?`#${myRank}`:"-"}</span>
-                <span style={s.statLabel}>ランク</span>
+                <span style={{...s.statVal, color:"#22c55e"}}>{myGrowthRank>0?`#${myGrowthRank}`:"-"}</span>
+                <span style={s.statLabel}>成長ランク</span>
               </div>
             </div>
             {todayRecord && (
@@ -223,12 +275,11 @@ export default function App() {
         {/* 今日の記録 */}
         {tab === "today" && (
           <div style={s.section}>
-            <div style={s.todayHeader}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
               <h2 style={s.sectionTitle}>📅 今日の記録</h2>
-              <span style={s.todayDate}>{today}</span>
+              <span style={{color:"#7090d0", fontSize:12}}>{today}</span>
             </div>
             <p style={s.rankSub}>今日練習したみんなの記録です</p>
-
             {todayAll.length === 0 ? (
               <div style={s.emptyBox}>
                 <div style={{fontSize:40, marginBottom:8}}>⚽</div>
@@ -240,7 +291,6 @@ export default function App() {
                 {todayAll.map((e, i) => {
                   const isMe = e.name === name;
                   const medals = ["🥇","🥈","🥉"];
-                  const myBestCount = records.length ? Math.max(...records.map(r => r.count)) : 0;
                   const theirBest = ranking.find(r => r.name === e.name)?.count || e.count;
                   const isPersonalBest = e.count >= theirBest;
                   return (
@@ -262,37 +312,64 @@ export default function App() {
           </div>
         )}
 
-        {/* 履歴 */}
-        {tab === "history" && (
+        {/* 成長ランキング */}
+        {tab === "growth" && (
           <div style={s.section}>
-            <h2 style={s.sectionTitle}>記録履歴</h2>
-            {records.length === 0 ? (
-              <p style={s.empty}>まだ記録がありません</p>
+            <h2 style={s.sectionTitle}>📈 成長ランキング</h2>
+            <p style={s.rankSub}>先週平均 → 今週平均の伸び率で競います</p>
+
+            {growthRanking.length === 0 ? (
+              <div style={s.emptyBox}>
+                <div style={{fontSize:40, marginBottom:8}}>📈</div>
+                <p style={{margin:0, color:"#7090d0"}}>今週まだ記録がありません</p>
+                <p style={{margin:"4px 0 0", color:"#506090", fontSize:12}}>記録すると成長ランキングに表示されます</p>
+              </div>
             ) : (
-              <div style={s.histList}>
-                {records.slice(0, 30).map((r, i) => {
-                  const isBest = r.count === best;
-                  const dt = new Date(r.date);
-                  const label = dt.toLocaleDateString("ja-JP", {month:"short", day:"numeric", weekday:"short"});
+              <div style={s.rankList}>
+                {growthRanking.map((e, i) => {
+                  const isMe = e.name === name;
+                  const medals = ["🥇","🥈","🥉"];
+                  const positive = e.rate !== null && e.rate > 0;
+                  const negative = e.rate !== null && e.rate < 0;
+                  const noLast = e.rate === null;
                   return (
-                    <div key={r.ts} style={{...s.histItem, ...(i===0?s.histItemFirst:{})}}>
-                      <span style={s.histDate}>{label}</span>
-                      <span style={s.histCount}>{isBest&&<span>👑</span>}{r.count.toLocaleString()}回</span>
-                      <div style={s.histBar}>
-                        <div style={{...s.histBarFill, width:`${Math.round((r.count/best)*100)}%`}} />
+                    <div key={e.name} style={{...s.growthItem, ...(isMe?s.rankItemMe:{})}}>
+                      <span style={s.rankPos}>{medals[i]||`${i+1}`}</span>
+                      <div style={{flex:1, minWidth:0}}>
+                        <div style={{display:"flex", alignItems:"center", gap:6, marginBottom:4}}>
+                          <span style={s.rankName}>{e.name}{isMe?" (あなた)":""}</span>
+                        </div>
+                        <div style={s.growthDetail}>
+                          <span style={{color:"#506090", fontSize:11}}>
+                            先週 {e.lastAvg !== null ? `${e.lastAvg}回` : "なし"} → 今週 {e.thisAvg}回
+                          </span>
+                          <span style={{fontSize:11, color:"#506090"}}>({e.thisDays}日練習)</span>
+                        </div>
+                      </div>
+                      <div style={{textAlign:"right", flexShrink:0}}>
+                        {noLast ? (
+                          <span style={{...s.rateBadge, background:"#2a4aad", color:"#90b8ff"}}>初週🆕</span>
+                        ) : positive ? (
+                          <span style={{...s.rateBadge, background:"#0d3a1f", color:"#4ade80"}}>+{e.rate}%⬆️</span>
+                        ) : negative ? (
+                          <span style={{...s.rateBadge, background:"#3a0d0d", color:"#f87171"}}>{e.rate}%⬇️</span>
+                        ) : (
+                          <span style={{...s.rateBadge, background:"#1a2f4a", color:"#90b8ff"}}>±0%</span>
+                        )}
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
+            <button style={s.refreshBtn} onClick={loadRanking}>🔄 更新</button>
           </div>
         )}
 
         {/* ランキング */}
         {tab === "ranking" && (
           <div style={s.section}>
-            <h2 style={s.sectionTitle}>🏆 友達ランキング</h2>
+            <h2 style={s.sectionTitle}>🏆 自己ベストランキング</h2>
             <p style={s.rankSub}>全期間の自己ベストで競います</p>
             {ranking.length === 0 ? (
               <p style={s.empty}>まだデータがありません</p>
@@ -344,22 +421,16 @@ const s = {
   kai: { fontSize:20, color:"#7090d0", fontWeight:700 },
   submitBtn: { background:"linear-gradient(135deg,#2a6fff,#4d8cff)", border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:800, padding:"13px 0", cursor:"pointer", width:"100%", letterSpacing:1 },
   burst: { background:"linear-gradient(135deg,#f5a623,#ff6b35)", borderRadius:14, padding:"14px", textAlign:"center", fontSize:16, fontWeight:800, color:"#fff" },
-  todayHeader: { display:"flex", justifyContent:"space-between", alignItems:"center" },
-  todayDate: { color:"#7090d0", fontSize:12 },
   emptyBox: { background:"#0d1f4a", border:"1.5px solid #2a4aad", borderRadius:14, padding:"32px 16px", textAlign:"center" },
   prBadge: { background:"#f5a623", color:"#000", fontSize:10, fontWeight:800, padding:"2px 6px", borderRadius:6 },
+  rateBadge: { fontSize:12, fontWeight:800, padding:"4px 8px", borderRadius:8, display:"inline-block" },
   sectionTitle: { fontSize:17, fontWeight:800, color:"#fff", margin:0 },
   empty: { color:"#7090d0", textAlign:"center", padding:"40px 0" },
-  histList: { display:"flex", flexDirection:"column", gap:8 },
-  histItem: { background:"#0d1f4a", borderRadius:12, padding:"10px 14px", display:"grid", gridTemplateColumns:"1fr auto", gridTemplateRows:"auto auto", gap:"4px 8px", alignItems:"center", boxSizing:"border-box" },
-  histItemFirst: { border:"1.5px solid #4d8cff" },
-  histDate: { color:"#8099cc", fontSize:12, fontWeight:600 },
-  histCount: { color:"#fff", fontSize:16, fontWeight:800, textAlign:"right", whiteSpace:"nowrap" },
-  histBar: { gridColumn:"1/-1", height:4, background:"#1a2f6b", borderRadius:2, overflow:"hidden" },
-  histBarFill: { height:"100%", background:"linear-gradient(90deg,#2a6fff,#4d8cff)", borderRadius:2 },
   rankSub: { color:"#7090d0", fontSize:12, margin:0 },
   rankList: { display:"flex", flexDirection:"column", gap:8 },
   rankItem: { background:"#0d1f4a", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:10, boxSizing:"border-box", minWidth:0 },
+  growthItem: { background:"#0d1f4a", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:10, boxSizing:"border-box", minWidth:0 },
+  growthDetail: { display:"flex", gap:8, flexWrap:"wrap" },
   rankItemMe: { border:"1.5px solid #4d8cff", background:"#0d234a" },
   rankPos: { fontSize:20, width:28, textAlign:"center", flexShrink:0 },
   rankName: { flex:1, fontWeight:700, fontSize:14, color:"#e0ecff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 },
